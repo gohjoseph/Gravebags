@@ -108,10 +108,15 @@ namespace Gravebags {
                     Item floorItem = Main.item[i];
                     if (floorItem.active &&
                         floorItem.netID == item.NetId &&
-                        floorItem.stack == item.Stack &&
+                        floorItem.stack >= item.Stack &&
                         floorItem.prefix == item.PrefixId) {
-                        Main.item[i].netDefaults(ItemID.None);
-                        Main.item[i].active = false;
+
+                        floorItem.stack -= item.Stack;
+                        if (floorItem.stack == 0) {
+                            Main.item[i].netDefaults(ItemID.None);
+                            Main.item[i].active = false;
+                        }
+
                         TSPlayer.All.SendData(PacketTypes.ItemDrop, null, i);
                         break;
                     }
@@ -149,9 +154,15 @@ namespace Gravebags {
             return itemID;
         }
 
+        private Dictionary<int, DateTime> playerLastCheck = new Dictionary<int, DateTime>();
+        private Dictionary<int, DateTime> playerLastSync = new Dictionary<int, DateTime>();
+
         void CheckGravebags(TSPlayer player) {
             int accountID = player.Account.ID;
-            if (player.Dead) return;
+
+            playerLastCheck.TryGetValue(accountID, out DateTime lastCheck);
+            if (player.Dead || (DateTime.UtcNow - lastCheck).Milliseconds <= 200) return;
+            playerLastCheck[accountID] = DateTime.UtcNow;
 
             foreach (int bagIndex in gravebags.Keys.ToList()) {
                 Gravebag bag = gravebags[bagIndex];
@@ -173,14 +184,19 @@ namespace Gravebags {
                 if (floorItem.position.Distance(bag.position) > 16.0 && floorItem.velocity.Equals(Vector2.Zero)) {
                     bag.position = floorItem.position;
                     dbManager.UpdateGravebagPosition(bag.ID, bag.position);
+
                     TShock.Log.ConsoleDebug("[Gravebags] Update Position {0} item {1} pos ({2} {3})",
                         bag.ID, bagIndex, bag.position.X / 16.0, bag.position.Y / 16.0);
                 }
 
-                // sync bag position
-                player.SendData(PacketTypes.ItemDrop, null, bagIndex);
+                // sync bag position every 5s
+                playerLastSync.TryGetValue(accountID, out DateTime lastSync);
+                if ((DateTime.UtcNow - lastSync).Seconds > 5) {
+                    player.SendData(PacketTypes.ItemDrop, null, bagIndex);
+                    playerLastSync[accountID] = DateTime.UtcNow;
+                }
 
-                // check within 3 blocks
+                // try to pickup bag
                 if (distance <= 48.0) {
                     bool bagRemoved = false;
                     if (accountID == bag.accountID) {
@@ -244,7 +260,8 @@ namespace Gravebags {
             if (pickedUp > 0) {
                 player.SendInfoMessage("[Gravebags] You picked up {0} item{1}. {2} item{3} left.",
                     pickedUp, pickedUp == 1 ? "" : "s", overflowCount, overflowCount == 1 ? "" : "s");
-                TShock.Log.ConsoleDebug("[Gravebags] Pick up {0} item {1} pickUp {2} count {3} overflow {4}", bag.ID, bagIndex, pickUpItems.Count, pickedUp, overflowCount);
+                TShock.Log.ConsoleDebug("[Gravebags] Pick up {0} item {1} pickUp {2} count {3} overflow {4}",
+                    bag.ID, bagIndex, pickUpItems.Count, pickedUp, overflowCount);
 
                 if (overflowCount > 0) dbManager.UpdateGravebagInventory(bag.ID, bag.inventory, bag.trashItem);
             }
@@ -258,6 +275,7 @@ namespace Gravebags {
             foreach (var kv in gravebagsNearPlayer.Where(kv => kv.Value == bagIndex).ToList()) {
                 gravebagsNearPlayer.Remove(kv.Key);
             }
+            Main.item[bagIndex].netDefaults(ItemID.None);
             Main.item[bagIndex].active = false;
             Main.item[bagIndex].keepTime = 0;
             TSPlayer.All.SendData(PacketTypes.ItemDrop, null, bagIndex);
